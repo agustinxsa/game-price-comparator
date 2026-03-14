@@ -71,6 +71,7 @@ Historical price data for analytics.
 - JPY
 - AUD
 - CAD
+- ARS (Argentine Peso)
 
 ## Relationships
 - Game has many Prices (one per store)

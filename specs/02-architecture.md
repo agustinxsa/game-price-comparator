@@ -11,9 +11,24 @@ The system follows a layered architecture with clear separation of concerns:
 - **Runtime**: Java 21
 - **Framework**: Spring Boot 3.x
 - **Build Tool**: Maven
-- **Database**: PostgreSQL (primary data store)
-- **Cache**: Redis (price caching, session management)
+- **Database**: PostgreSQL (production) / H2 (local development)
+- **Cache**: Redis (production) / In-memory ConcurrentHashMap (local development)
 - **Containerization**: Docker + Docker Compose
+
+## Local Development
+
+For local development, a `local` profile is available that does not require external services:
+
+- **Database**: H2 in-memory database (auto-created on startup)
+- **Cache**: In-memory `LocalCacheService` using `ConcurrentHashMap`
+- **Activation**: Run with `-Dspring-boot.run.profiles=local`
+
+### Seed Data
+
+The `DataLoader` component loads sample data on startup for the local profile:
+- 3 stores: Steam, PlayStation Store, Xbox Store
+- 5 games: Zelda, Mario, God of War, Cyberpunk, Minecraft
+- 10 prices: Various price points for testing
 
 ## Layer Responsibilities
 
@@ -25,7 +40,7 @@ The system follows a layered architecture with clear separation of concerns:
 ### Service Layer
 - `GameService` - Game search and persistence (DB operations)
 - `PriceAggregationService` - Price comparison logic, collector orchestration, result aggregation
-- `CacheService` - Redis caching operations with 6-hour TTL
+- `CacheService` / `LocalCacheService` - Caching operations with 6-hour TTL (interface: `ICacheService`)
 
 ### Repository Layer
 - `GameRepository` - Game entity persistence
@@ -71,11 +86,30 @@ The `SteamCollector` implementation uses Steam's public APIs to fetch game data 
 ### Implementation Details
 
 - **HTTP Client**: Spring WebClient with reactive programming
-- **Timeout**: 10 seconds for all API calls
+- **Timeout**: 5 seconds for all API calls
 - **Error Handling**: Graceful degradation - returns empty results on failure
-- **Caching**: Results cached in Redis with 6-hour TTL
+- **Caching**: Results cached with 6-hour TTL
   - Search cache key: `steam:search:{query}`
   - Price cache key: `steam:price:{appId}`
+- **Regional Settings**: Argentina (cc=AR), Spanish language (l=spanish)
+
+### Data Mapping
+
+**Search Response:**
+- Extracts: name, appId, price (in cents), tiny_image URL
+- Maps to: StorePriceResult with PC platform, USD currency
+
+**App Details Response:**
+- Extracts: name, price_overview (final/original price, discount percent, currency)
+- Maps to: StorePriceResult with full price information
+
+### DTOs
+
+| DTO | Description |
+|-----|-------------|
+| `SteamSearchResponse` | Response wrapper with total count and items list |
+| `SteamItem` | Individual game item: id, name, price, tiny_image |
+| `SteamPrice` | Price details: currency, initial, final (in cents) |
 
 ### Data Mapping
 
@@ -92,7 +126,7 @@ The `SteamCollector` implementation uses Steam's public APIs to fetch game data 
 WebClient configured in `WebClientConfig` with:
 - Base URL: `https://store.steampowered.com`
 - Headers: Accept: application/json, User-Agent: GamePriceComparator/1.0
-- Timeout: 10 seconds
+- Timeout: 5 seconds
 
 ## Extensibility
 New stores can be added by:
@@ -124,12 +158,15 @@ New stores can be added by:
 ```
 
 ## Configuration
-- Application config via `application.yml`
+- Application config via `application.yml` (and `application-local.yml` for local development)
 - Store-specific config in database
 - Environment variables for sensitive data
-- Redis configuration with Jackson serialization
+- Redis configuration with Jackson serialization (production)
+- In-memory cache for local development
 
 ## Docker Architecture
 - `app` - Spring Boot application
 - `postgres` - PostgreSQL database
 - `redis` - Redis cache
+
+**Note**: For local development, use the `local` profile which runs without Docker dependencies.
