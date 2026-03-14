@@ -45,7 +45,7 @@ The system follows a layered architecture with clear separation of concerns:
 2. Controller receives and validates request
 3. Service checks Redis cache for cached results
 4. If cache miss, PriceAggregationService orchestrates collector execution
-5. Collectors fetch prices from external stores (mock implementations)
+5. Collectors fetch prices from external stores (real API for Steam, mock for others)
 6. Results are aggregated and normalized
 7. Results are cached in Redis with 6-hour TTL
 8. Response returned to user
@@ -56,6 +56,43 @@ The system follows a layered architecture with clear separation of concerns:
   - Prices: `price:{gameId}`
 - **TTL**: 6 hours for all cached data
 - **Cache Invalidation**: Manual via service methods
+
+## Steam Integration
+
+The `SteamCollector` implementation uses Steam's public APIs to fetch game data and prices.
+
+### API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `https://store.steampowered.com/api/storesearch/?term={query}` | Search games by name |
+| `https://store.steampowered.com/api/appdetails?appids={appId}` | Get game details and price |
+
+### Implementation Details
+
+- **HTTP Client**: Spring WebClient with reactive programming
+- **Timeout**: 10 seconds for all API calls
+- **Error Handling**: Graceful degradation - returns empty results on failure
+- **Caching**: Results cached in Redis with 6-hour TTL
+  - Search cache key: `steam:search:{query}`
+  - Price cache key: `steam:price:{appId}`
+
+### Data Mapping
+
+**Search Response:**
+- Extracts: name, appId, thumbnail URL
+- Maps to: StorePriceResult with PC platform
+
+**App Details Response:**
+- Extracts: name, price_overview (final/original price, discount percent, currency)
+- Maps to: StorePriceResult with full price information
+
+### Configuration
+
+WebClient configured in `WebClientConfig` with:
+- Base URL: `https://store.steampowered.com`
+- Headers: Accept: application/json, User-Agent: GamePriceComparator/1.0
+- Timeout: 10 seconds
 
 ## Extensibility
 New stores can be added by:
