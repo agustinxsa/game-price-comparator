@@ -55,7 +55,11 @@ public class PriceAggregationService {
         Map<String, StoreCollector> collectorMap = collectors.stream()
             .collect(Collectors.toMap(StoreCollector::getStoreCode, Function.identity()));
 
+        log.info("Available collectors: {}", collectorMap.keySet());
+
         List<Store> stores = storeRepository.findByIsActiveTrueOrderByPriorityDesc();
+
+        log.info("Active stores: {}", stores.stream().map(Store::getCode).collect(Collectors.toList()));
 
         return stores.stream()
             .map(store -> {

@@ -6,5 +6,6 @@ public enum Currency {
     GBP,
     JPY,
     AUD,
-    CAD
+    CAD,
+    ARS
 }
