@@ -1,6 +1,8 @@
 package com.gameprice.comparator.collector;
 
 import com.gameprice.comparator.dto.StorePriceResult;
+import com.gameprice.comparator.dto.SteamItem;
+import com.gameprice.comparator.dto.SteamSearchResponse;
 import com.gameprice.comparator.enums.Currency;
 import com.gameprice.comparator.enums.Platform;
 import com.gameprice.comparator.service.ICacheService;
@@ -27,9 +29,10 @@ public class SteamCollector implements StoreCollector {
     private final ICacheService cacheService;
 
     private static final String STORE_CODE = "steam";
+    private static final String STORE_NAME = "STEAM";
     private static final String SEARCH_CACHE_PREFIX = "steam:search:";
     private static final String PRICE_CACHE_PREFIX = "steam:price:";
-    private static final Duration TIMEOUT = Duration.ofSeconds(10);
+    private static final Duration TIMEOUT = Duration.ofSeconds(5);
     private static final int MAX_SEARCH_RESULTS = 10;
 
     public SteamCollector(
@@ -63,6 +66,9 @@ public class SteamCollector implements StoreCollector {
     @Override
     public StorePriceResult fetchPrices(String externalId) {
         String appId = extractAppId(externalId);
+        if (appId == null) {
+            return null;
+        }
         String cacheKey = PRICE_CACHE_PREFIX + appId;
 
         return cacheService.get(cacheKey, StorePriceResult.class)
@@ -77,31 +83,36 @@ public class SteamCollector implements StoreCollector {
 
     private List<StorePriceResult> fetchSearchResults(String query) {
         try {
-            String uri = "/api/storesearch/?term={term}&l=english&cc=US";
+            log.info("Calling Steam API with query: {}", query);
             
             SteamSearchResponse response = webClient.get()
-                .uri(uri, query)
+                .uri(uriBuilder -> uriBuilder
+                    .path("storesearch")
+                    .queryParam("term", query)
+                    .queryParam("cc", "AR")
+                    .queryParam("l", "spanish")
+                    .build())
                 .retrieve()
                 .bodyToMono(SteamSearchResponse.class)
                 .timeout(TIMEOUT)
-                .onErrorResume(e -> {
-                    log.error("Steam search API error for query '{}': {}", query, e.getMessage());
-                    return Mono.empty();
-                })
                 .block();
 
-            if (response == null || response.getItems() == null) {
-                log.warn("Empty response from Steam search API for query: {}", query);
+            log.info("Steam API response received: {}", response);
+            
+            if (response == null || response.getItems() == null || response.getItems().isEmpty()) {
+                log.debug("Empty response from Steam search API for query: {}", query);
                 return Collections.emptyList();
             }
 
+            log.info("Found {} items from Steam", response.getItems().size());
+            
             return response.getItems().stream()
                 .limit(MAX_SEARCH_RESULTS)
                 .map(this::mapSearchItem)
                 .collect(Collectors.toList());
 
         } catch (Exception e) {
-            log.error("Failed to fetch search results from Steam for query '{}': {}", query, e.getMessage());
+            log.warn("Failed to fetch search results from Steam for query '{}': {}", query, e.getMessage());
             return Collections.emptyList();
         }
     }
@@ -116,7 +127,7 @@ public class SteamCollector implements StoreCollector {
                 .bodyToMono(Object.class)
                 .timeout(TIMEOUT)
                 .onErrorResume(e -> {
-                    log.error("Steam appdetails API error for appId '{}': {}", appId, e.getMessage());
+                    log.warn("Steam appdetails API error for appId '{}': {}", appId, e.getMessage());
                     return Mono.empty();
                 });
 
@@ -131,27 +142,34 @@ public class SteamCollector implements StoreCollector {
             java.util.Map<String, Object> appData = (java.util.Map<String, Object>) responseMap.get(appId);
             
             if (appData == null || !Boolean.TRUE.equals(appData.get("success"))) {
-                log.warn("Steam appdetails returned no data for appId: {}", appId);
+                log.debug("Steam appdetails returned no data for appId: {}", appId);
                 return null;
             }
 
             return mapAppDetails(appData, appId);
 
         } catch (Exception e) {
-            log.error("Failed to fetch price details from Steam for appId '{}': {}", appId, e.getMessage());
+            log.warn("Failed to fetch price details from Steam for appId '{}': {}", appId, e.getMessage());
             return null;
         }
     }
 
-    private StorePriceResult mapSearchItem(SteamSearchItem item) {
+    private StorePriceResult mapSearchItem(SteamItem item) {
+        BigDecimal price = null;
+        if (item.getPrice() != null && item.getPrice().getFinalPrice() != null) {
+            price = BigDecimal.valueOf(item.getPrice().getFinalPrice()).divide(BigDecimal.valueOf(100));
+        }
+        
         return StorePriceResult.builder()
-            .externalId(STORE_CODE + "_" + item.getId())
+            .externalId(String.valueOf(item.getId()))
             .name(item.getName())
-            .imageUrl(item.getThumb())
+            .imageUrl(item.getTinyImage())
             .url("https://store.steampowered.com/app/" + item.getId())
             .platforms(Set.of(Platform.PC))
-            .storeCode(STORE_CODE)
-            .isAvailable(true)
+            .storeCode(STORE_NAME)
+            .amount(price)
+            .currency(Currency.USD)
+            .isAvailable(price != null)
             .collectedAt(LocalDateTime.now())
             .build();
     }
@@ -164,7 +182,6 @@ public class SteamCollector implements StoreCollector {
         BigDecimal amount = null;
         BigDecimal originalAmount = null;
         Integer discountPercent = null;
-        Currency currency = Currency.USD;
         
         if (priceObj instanceof java.util.Map) {
             @SuppressWarnings("unchecked")
@@ -172,7 +189,6 @@ public class SteamCollector implements StoreCollector {
             
             String finalPrice = (String) priceMap.get("final_formatted");
             String originalPrice = (String) priceMap.get("initial_formatted");
-            String currencyCode = (String) priceMap.get("currency");
             
             if (finalPrice != null) {
                 amount = parsePrice(finalPrice);
@@ -181,29 +197,22 @@ public class SteamCollector implements StoreCollector {
                 originalAmount = parsePrice(originalPrice);
             }
             
-            Integer discount = (Integer) priceMap.get("discount_percent");
-            if (discount != null) {
-                discountPercent = discount;
-            }
-            
-            if (currencyCode != null) {
-                currency = mapCurrency(currencyCode);
-            }
+            discountPercent = (Integer) priceMap.get("discount_percent");
         }
 
         return StorePriceResult.builder()
-            .externalId(STORE_CODE + "_" + appId)
+            .externalId(appId)
             .name(name)
             .imageUrl(thumb)
             .url("https://store.steampowered.com/app/" + appId)
             .platforms(Set.of(Platform.PC))
             .amount(amount)
-            .currency(currency)
+            .currency(Currency.ARS)
             .originalAmount(originalAmount)
             .discountPercent(discountPercent)
             .isAvailable(amount != null)
             .collectedAt(LocalDateTime.now())
-            .storeCode(STORE_CODE)
+            .storeCode(STORE_NAME)
             .build();
     }
 
@@ -215,19 +224,8 @@ public class SteamCollector implements StoreCollector {
         try {
             return new BigDecimal(cleaned);
         } catch (NumberFormatException e) {
-            log.warn("Failed to parse price: {}", priceStr);
+            log.debug("Failed to parse price: {}", priceStr);
             return null;
-        }
-    }
-
-    private Currency mapCurrency(String currencyCode) {
-        if (currencyCode == null) {
-            return Currency.USD;
-        }
-        try {
-            return Currency.valueOf(currencyCode);
-        } catch (IllegalArgumentException e) {
-            return Currency.USD;
         }
     }
 
@@ -255,11 +253,10 @@ public class SteamCollector implements StoreCollector {
         SteamSearchResponse response = new SteamSearchResponse();
         response.setItems(results.stream()
             .map(r -> {
-                SteamSearchItem item = new SteamSearchItem();
-                String appId = extractAppId(r.getExternalId());
-                item.setId(appId);
+                SteamItem item = new SteamItem();
+                item.setId(Long.parseLong(r.getExternalId()));
                 item.setName(r.getName());
-                item.setThumb(r.getImageUrl());
+                item.setTinyImage(r.getImageUrl());
                 return item;
             })
             .collect(Collectors.toList()));
@@ -269,47 +266,5 @@ public class SteamCollector implements StoreCollector {
     @Override
     public boolean isAvailable() {
         return true;
-    }
-
-    static class SteamSearchResponse {
-        private List<SteamSearchItem> items;
-
-        public List<SteamSearchItem> getItems() {
-            return items;
-        }
-
-        public void setItems(List<SteamSearchItem> items) {
-            this.items = items;
-        }
-    }
-
-    static class SteamSearchItem {
-        private String id;
-        private String name;
-        private String thumb;
-
-        public String getId() {
-            return id;
-        }
-
-        public void setId(String id) {
-            this.id = id;
-        }
-
-        public String getName() {
-            return name;
-        }
-
-        public void setName(String name) {
-            this.name = name;
-        }
-
-        public String getThumb() {
-            return thumb;
-        }
-
-        public void setThumb(String thumb) {
-            this.thumb = thumb;
-        }
     }
 }
