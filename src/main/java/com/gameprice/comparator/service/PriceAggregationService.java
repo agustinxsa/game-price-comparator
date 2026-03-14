@@ -21,7 +21,7 @@ public class PriceAggregationService {
 
     private final List<StoreCollector> collectors;
     private final StoreRepository storeRepository;
-    private final CacheService cacheService;
+    private final ICacheService cacheService;
 
     private static final String PRICE_CACHE_PREFIX = "price:";
     private static final String SEARCH_CACHE_PREFIX = "search:";

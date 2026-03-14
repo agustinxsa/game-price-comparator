@@ -2,16 +2,18 @@ package com.gameprice.comparator.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Profile;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
-@Service
+@Service("redisCacheService")
 @RequiredArgsConstructor
 @Slf4j
-public class CacheService {
+@Profile("!local")
+public class CacheService implements ICacheService {
 
     private final RedisTemplate<String, Object> redisTemplate;
 
